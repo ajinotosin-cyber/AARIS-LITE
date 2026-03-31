@@ -203,11 +203,10 @@ The system generates **downloadable academic reports** containing:
 
 Author
 
-
 Oluwatosin Deborah Ajinomisan
 
 GitHub: https://github.com/ajinotosin-cyber
 
-© 2026 AARIS-LITE  
 
+© 2026 AARIS-LITE  
 All Rights Reserved
