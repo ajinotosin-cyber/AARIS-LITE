@@ -201,11 +201,11 @@ The system generates **downloadable academic reports** containing:
 
 
 
+Author
+Oluwatosin Deborah Ajinomisan
 
-Capstone Project – Intelligent Academic Analytics Platform  
+GitHub: https://github.com/ajinotosin-cyber
 
-
-
-© 2026 AARIS Research Team  
+© 2026 AARIS-LITE  
 
 All Rights Reserved
