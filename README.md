@@ -4,7 +4,8 @@
 
 **AI Academic Records & Intelligence System**
 
-https://jwrcpt2u3ipgbhw2tza8he.streamlit.app/
+https://aaris-lite-fdcj4zjtuhwsbnpfxdhfjz.streamlit.app/
+
 
 Intelligent Academic Analytics Platform for African Universities.
 
