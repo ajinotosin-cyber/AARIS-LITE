@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Editor / workspace metadata -- personal, never part of this project
+*.code-workspace
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Generated artifacts that must never be committed. report_generator.py
+# writes PDFs to a real temp file and cleans up after itself, so this
+# should never reappear -- kept here defensively.
+*.pdf
+
+# Secrets (this project currently uses no external API keys/secrets, but
+# reserved defensively in case that changes)
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml

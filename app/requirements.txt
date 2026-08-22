@@ -1,7 +1,7 @@
+# Runtime dependencies for the Streamlit app (app.py and its sibling
+# modules: config.py, validation.py, feature_engineering.py,
+# model_utils.py, risk_scoring.py, report_generator.py).
 streamlit
 pandas
-numpy
-scikit-learn
-matplotlib
-fpdf
-joblib
+scikit-learn==1.8.0
+fpdf2

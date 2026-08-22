@@ -1,0 +1,4 @@
+# Additional dependencies needed ONLY to re-run src/model_training.py
+# (retraining). Install alongside app/requirements.txt:
+#   pip install -r app/requirements.txt -r src/requirements.txt
+openpyxl
