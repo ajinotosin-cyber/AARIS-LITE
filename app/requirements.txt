@@ -1,7 +1,16 @@
 # Runtime dependencies for the Streamlit app (app.py and its sibling
 # modules: config.py, validation.py, feature_engineering.py,
 # model_utils.py, risk_scoring.py, report_generator.py).
-streamlit
-pandas
+#
+# Minimum-version bounds, not exact pins, for streamlit/pandas/fpdf2 --
+# an exact pin resolved in one build environment isn't guaranteed
+# installable on every deployment Python version. scikit-learn IS
+# pinned exactly and deliberately: classifier_model.pkl, regression_model.pkl,
+# and anomaly_model.pkl are serialized with this specific version, and a
+# pickled sklearn model can fail to load or silently behave differently
+# under a different version -- this pin should not be loosened without
+# retraining and re-saving the models against the new version.
+streamlit>=1.32
+pandas>=2.0
 scikit-learn==1.8.0
-fpdf2
+fpdf2>=2.7

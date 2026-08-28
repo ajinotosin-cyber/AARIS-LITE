@@ -124,7 +124,9 @@ src model_training.py
 
 
  notebook
-model_training.ipynb
+AARIS_Notebook.ipynb -- historical/exploratory only; see the warning
+in its second cell before running it. Do not use it to retrain the
+shipped models -- use src/model_training.py instead.
 
 README.md
 

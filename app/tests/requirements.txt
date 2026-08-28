@@ -1,4 +1,4 @@
 # Additional dependency needed ONLY to run tests/test_report_generator.py
 # (verifies the generated PDF's page count). Not a runtime dependency of
 # the app itself.
-pypdf
+pypdf>=4.0
