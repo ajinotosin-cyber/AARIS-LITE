@@ -5,7 +5,10 @@ import model_utils as mu
 import report_generator
 import risk_scoring
 from feature_engineering import build_academic_summary, model_features
-from validation import validate_matric_number, validate_subject_entries, collect_valid_subjects
+from validation import (
+    validate_matric_number, validate_subject_entries, collect_valid_subjects,
+    validate_previous_record,
+)
 
 # ---------------------------------------------------------------------------
 # PAGE CONFIG
@@ -85,20 +88,46 @@ st.header("Student Academic Profile")
 
 matric = st.text_input("Matric Number", placeholder="e.g. ST101")
 
+with st.expander("Previous Academic Record (optional) — combine with a prior CGPA"):
+    st.caption(
+        "If you have a CGPA and total units from previous semesters, enter them here "
+        "to get a genuine running cumulative CGPA that blends your prior record with "
+        "this semester's courses. Leave both blank if this is your first semester or "
+        "you just want to analyze this semester on its own."
+    )
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        raw_previous_cgpa = st.number_input(
+            "Previous CGPA", key="previous_cgpa_input", min_value=0.0, max_value=config.MAX_PREVIOUS_CGPA,
+            value=None, step=0.01, placeholder=f"0.00-{config.MAX_PREVIOUS_CGPA:.2f}",
+        )
+    with pc2:
+        raw_previous_units = st.number_input(
+            "Previous Total Units", key="previous_units_input", min_value=0, max_value=config.MAX_PREVIOUS_UNITS,
+            value=None, step=1, placeholder="e.g. 90",
+        )
+
 if "subject_row_count" not in st.session_state:
     st.session_state.subject_row_count = min(4, config.MAX_SUBJECTS)
 
 st.markdown(
     f'<div class="aaris-metric-sub">Enter between {config.MIN_SUBJECTS} and '
     f'{config.MAX_SUBJECTS} courses. Only the course name is required to '
-    f'start — leave a row completely blank to skip it.</div>',
+    f'start — leave a row completely blank to skip it. Units default to '
+    f'{config.DEFAULT_COURSE_UNITS} and are used to weight GPA, just like real '
+    f'credit-hour courses.</div>',
     unsafe_allow_html=True,
 )
 st.write("")
 
+_h1, _h2, _h3 = st.columns([2, 1, 1])
+_h1.caption("Course name")
+_h2.caption("Score (0-100)")
+_h3.caption("Units")
+
 raw_entries = []
 for i in range(st.session_state.subject_row_count):
-    c1, c2 = st.columns([2, 1])
+    c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         name = st.text_input(f"Course {i + 1} name", key=f"subj_name_{i}", label_visibility="collapsed",
                               placeholder=f"Course {i + 1} name")
@@ -106,7 +135,11 @@ for i in range(st.session_state.subject_row_count):
         score = st.number_input(f"Course {i + 1} score", key=f"subj_score_{i}", label_visibility="collapsed",
                                  min_value=0.0, max_value=100.0, value=None, step=1.0,
                                  placeholder="Score (0-100)")
-    raw_entries.append((name, score))
+    with c3:
+        units = st.number_input(f"Course {i + 1} units", key=f"subj_units_{i}", label_visibility="collapsed",
+                                 min_value=config.MIN_COURSE_UNITS, max_value=config.MAX_COURSE_UNITS,
+                                 value=config.DEFAULT_COURSE_UNITS, step=1, help="Course/credit units")
+    raw_entries.append((name, score, units))
 
 add_col, remove_col, _ = st.columns([1, 1, 3])
 with add_col:
@@ -139,6 +172,10 @@ def result_card(label: str, value: str, value_class: str, subtext: str = "") -> 
 
 if analyze_clicked:
     validation_result = validate_subject_entries(raw_entries)
+    prev_valid, prev_err, previous_record = validate_previous_record(raw_previous_cgpa, raw_previous_units)
+    if not prev_valid:
+        validation_result.valid = False
+        validation_result.errors.append(prev_err)
 
     if not validation_result.valid:
         for err in validation_result.errors:
@@ -149,7 +186,7 @@ if analyze_clicked:
         features = model_features(summary)
 
         standing_result = mu.predict_standing(features, models)
-        cgpa_result = mu.predict_cgpa(features, models)
+        cgpa_result = mu.compute_cgpa(summary, previous_record=previous_record)
         anomaly_result = mu.detect_anomalous_subjects(summary.subjects, models)
 
         # ---------------- ACADEMIC STANDING + CGPA (primary results) ----------------
@@ -161,21 +198,27 @@ if analyze_clicked:
         else:
             standing_value, standing_class = "Unavailable", "aaris-value-muted"
 
-        if cgpa_result.status == mu.STATUS_OK:
-            cgpa_value, cgpa_class = f"{cgpa_result.predicted_cgpa:.2f}", "aaris-value-good"
-        else:
-            cgpa_value, cgpa_class = "Unavailable", "aaris-value-muted"
+        cgpa_value, cgpa_class = f"{cgpa_result.predicted_cgpa:.2f}", "aaris-value-good"
 
         r1c1, r1c2 = st.columns(2)
         with r1c1:
             st.markdown(result_card("Academic Standing", standing_value, standing_class), unsafe_allow_html=True)
         with r1c2:
             # Labeled "CGPA" (not "GPA") to distinguish it from the directly
-            # computed GPA card in the row below -- these are two different
-            # numbers (this one is the model's cumulative-GPA estimate), and
-            # this label must stay in sync with report_generator.py's PDF,
-            # which shows the exact same value under the same "CGPA" label.
+            # computed GPA card in the row below. When no previous record is
+            # entered, both are the same credit-unit-weighted calculation
+            # over the entered courses (see feature_engineering's
+            # build_academic_summary docstring) and are numerically equal;
+            # when a previous CGPA + units IS entered, CGPA becomes the
+            # genuine blended cumulative figure (see combine_cgpa) and will
+            # differ from this semester's own GPA -- that's the whole point.
             st.markdown(result_card("CGPA", cgpa_value, cgpa_class), unsafe_allow_html=True)
+            if previous_record is not None:
+                st.caption(
+                    f"Includes {previous_record.total_units} previously completed units "
+                    f"at {previous_record.cgpa:.2f} CGPA, blended with this semester's "
+                    f"{summary.total_units} units."
+                )
 
         # ---------------- SUPPORTING METRICS ----------------
         # Mirrors the PDF's own KPI row exactly (Courses Entered, Average
@@ -192,25 +235,34 @@ if analyze_clicked:
             st.markdown(result_card("Degree Classification", summary.degree_class, ""), unsafe_allow_html=True)
 
         # ---------------- HIGH-SCORE CONFIRMATION NOTE ----------------
-        # Narrow and honest: the anomaly model only ever flags scores that
-        # are unusually HIGH relative to the real historical course-score
-        # distribution it was trained on (verified directly against its
-        # decision_function -- it does not flag low scores). So this is
-        # framed as a plain "please confirm" data-entry check, not a vague
-        # "anomaly detected" alert, and it only appears when something was
+        # Only ever flags a score that is BOTH >= HIGH_SCORE_CONFIRMATION_FLOOR
+        # AND statistically inconsistent with the specific student's own
+        # other scores (see model_utils.detect_anomalous_subjects) -- never
+        # simply for being a high, ordinary, believable result. Wording is
+        # deliberately a review recommendation, not an accusation: it never
+        # claims the score is wrong, only that it may warrant verification
+        # against the original record. It only appears when something was
         # actually flagged.
         if anomaly_result.status == mu.STATUS_OK and anomaly_result.anomalous_subjects:
             flagged = anomaly_result.anomalous_subjects
             if len(flagged) == 1:
-                note = f"Please confirm: {flagged[0]} score appears unusually high."
+                subject_phrase = f"the {flagged[0]} score"
             else:
-                note = f"Please confirm: the following scores appear unusually high: {', '.join(flagged)}."
+                subject_phrase = f"the following scores: {', '.join(flagged)}"
+            note = (
+                f"**Score Confirmation Recommended**\n\n"
+                f"One or more exceptionally high scores ({subject_phrase}) may warrant review "
+                f"because they appear statistically inconsistent with the student's available "
+                f"academic performance data. Please verify the score entry against the original "
+                f"academic record."
+            )
             st.info(note)
 
         # ---------------- COURSE PERFORMANCE BREAKDOWN ----------------
         with st.expander("Course Performance Breakdown", expanded=True):
             st.dataframe(
-                [{"Course": s.name, "Score": s.score, "Grade": s.grade} for s in summary.subjects],
+                [{"Course": s.name, "Score": s.score, "Grade": s.grade, "Units": s.units}
+                 for s in summary.subjects],
                 width="stretch", hide_index=True,
             )
 
@@ -221,15 +273,24 @@ if analyze_clicked:
             st.info(f"Enter a matric number above to generate a downloadable PDF report. ({matric_err})")
         else:
             recs = risk_scoring.recommendations(summary.gpa)
-            pdf_bytes = report_generator.generate_report_pdf(
-                matric, summary, recs, standing_result, cgpa_result, anomaly_result,
-            )
-            st.download_button(
-                label="Download Student Report (PDF)",
-                data=pdf_bytes,
-                file_name=f"AARIS_report_{matric}.pdf",
-                mime="application/pdf",
-            )
+            try:
+                pdf_bytes = report_generator.generate_report_pdf(
+                    matric, summary, recs, standing_result, cgpa_result, anomaly_result,
+                    previous_record=previous_record,
+                )
+            except RuntimeError as exc:
+                # PDF generation specifically failed (most commonly a local
+                # fpdf2 environment problem) -- the analysis above this point
+                # already rendered successfully and stays visible; only the
+                # download button is affected.
+                st.error(str(exc))
+            else:
+                st.download_button(
+                    label="Download Student Report (PDF)",
+                    data=pdf_bytes,
+                    file_name=f"AARIS_report_{matric}.pdf",
+                    mime="application/pdf",
+                )
 
 # ---------------------------------------------------------------------------
 # FOOTER

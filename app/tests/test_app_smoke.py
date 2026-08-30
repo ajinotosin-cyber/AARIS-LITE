@@ -139,26 +139,35 @@ class TestAppSmoke(unittest.TestCase):
             self.assertNotIn(phrase, body, f"Forbidden phrase leaked onto the interface: {phrase!r}")
 
     def test_high_score_note_shown_on_interface_when_flagged(self):
-        """A submission with a genuine score outlier gets the narrow,
-        honest 'please confirm' note -- never generic anomaly wording."""
+        """A submission with a genuine score outlier (statistically
+        inconsistent with the student's own other scores, with a
+        sufficient sample size) gets the professional 'Score Confirmation
+        Recommended' note -- never accusatory 'anomaly'/'suspicious' wording."""
         at = AppTest.from_file(APP_PATH)
         at.run(timeout=30)
-        at.text_input(key="subj_name_0").set_value("Normal1")
-        at.number_input(key="subj_score_0").set_value(65)
-        at.text_input(key="subj_name_1").set_value("Normal2")
-        at.number_input(key="subj_score_1").set_value(70)
-        at.text_input(key="subj_name_2").set_value("Extreme")
-        at.number_input(key="subj_score_2").set_value(100)
+        # Default view shows 4 rows; add a 5th to reach the minimum
+        # sample size the confirmation check requires.
+        add_button = [b for b in at.button if b.label.startswith("+ Add Course")][0]
+        add_button.click().run(timeout=30)
+
+        names = ["Normal1", "Normal2", "Normal3", "Normal4", "Extreme"]
+        scores = [55, 60, 58, 62, 98]
+        for i, (name, score) in enumerate(zip(names, scores)):
+            at.text_input(key=f"subj_name_{i}").set_value(name)
+            at.number_input(key=f"subj_score_{i}").set_value(score)
         analyze = [b for b in at.button if b.label == "Analyze Academic Profile"][0]
         analyze.click().run(timeout=30)
         self.assertFalse(at.exception)
         infos = " ".join(i.value for i in at.info)
-        self.assertIn("Please confirm: Extreme score appears unusually high.", infos)
+        self.assertIn("Score Confirmation Recommended", infos)
+        self.assertIn("Extreme", infos)
+        self.assertIn("statistically inconsistent", infos)
         body = " ".join(m.value for m in at.markdown).lower()
         warnings = " ".join(w.value for w in at.warning).lower()
         self.assertNotIn("anomaly", body)
         self.assertNotIn("anomaly", warnings)
-        self.assertNotIn("flagged", body)
+        self.assertNotIn("suspicious", infos.lower())
+
 
     def test_high_score_note_absent_on_interface_when_nothing_flagged(self):
         at = AppTest.from_file(APP_PATH)
@@ -241,6 +250,56 @@ class TestAppSmokePdfIntegration(unittest.TestCase):
         download_buttons = at.get("download_button")
         self.assertEqual(len(download_buttons), 1)
         self.assertEqual(download_buttons[0].label, "Download Student Report (PDF)")
+
+    def test_previous_record_end_to_end_produces_blended_cgpa(self):
+        """Real end-to-end test of the multi-semester CGPA feature,
+        driving the actual widgets a user interacts with -- not just
+        calling the underlying functions directly."""
+        at = AppTest.from_file(APP_PATH)
+        at.run(timeout=30)
+        at.number_input(key="previous_cgpa_input").set_value(3.00)
+        at.number_input(key="previous_units_input").set_value(90)
+        at.text_input(key="subj_name_0").set_value("CS101")
+        at.number_input(key="subj_score_0").set_value(90)  # A = 5.0 grade points
+        at.number_input(key="subj_units_0").set_value(6)
+        analyze = [b for b in at.button if b.label == "Analyze Academic Profile"][0]
+        analyze.click().run(timeout=30)
+        self.assertFalse(at.exception)
+        body = " ".join(m.value for m in at.markdown)
+        # GPA (this semester) = 5.00, CGPA (blended with 3.00 over 90 prior
+        # units) must show a genuinely different, lower number -- not 5.00.
+        self.assertIn("5.00", body)
+        self.assertNotIn("CGPA</div><div class=\"aaris-value-good\">5.00", body)
+        captions = " ".join(c.value for c in at.caption)
+        self.assertIn("90", captions)
+        self.assertIn("3.00", captions)
+
+    def test_previous_cgpa_without_units_shows_validation_error(self):
+        """Entering only one half of the optional pair must be rejected,
+        not silently ignored or silently defaulted."""
+        at = AppTest.from_file(APP_PATH)
+        at.run(timeout=30)
+        at.number_input(key="previous_cgpa_input").set_value(3.5)
+        at.text_input(key="subj_name_0").set_value("CS101")
+        at.number_input(key="subj_score_0").set_value(75)
+        analyze = [b for b in at.button if b.label == "Analyze Academic Profile"][0]
+        analyze.click().run(timeout=30)
+        self.assertFalse(at.exception)
+        errors = " ".join(e.value for e in at.error)
+        self.assertIn("units", errors.lower())
+
+    def test_no_previous_record_entered_works_exactly_as_before(self):
+        """Regression guard: leaving the optional section blank entirely
+        must not affect the normal, existing single-semester flow."""
+        at = AppTest.from_file(APP_PATH)
+        at.run(timeout=30)
+        at.text_input(key="subj_name_0").set_value("CS101")
+        at.number_input(key="subj_score_0").set_value(75)
+        analyze = [b for b in at.button if b.label == "Analyze Academic Profile"][0]
+        analyze.click().run(timeout=30)
+        self.assertFalse(at.exception)
+        errors = " ".join(e.value for e in at.error)
+        self.assertEqual(errors, "")
 
 
 if __name__ == "__main__":

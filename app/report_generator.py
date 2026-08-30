@@ -97,11 +97,36 @@ import os
 import tempfile
 from datetime import datetime
 
-from fpdf import FPDF
-from fpdf.enums import XPos, YPos
-
 from feature_engineering import AcademicSummary
 import model_utils as mu
+
+# ---------------------------------------------------------------------------
+# fpdf2 is imported defensively, not at plain module level. On a machine
+# with a broken/corrupted fpdf2 install or a Python version fpdf2 doesn't
+# yet fully support, letting this import fail at module load time would
+# crash app.py's own top-level `import report_generator` -- taking down
+# the ENTIRE app (analysis, standing/CGPA prediction, everything) over a
+# problem that only actually affects PDF export. Instead, the failure is
+# captured here and only surfaced -- with a clear, actionable message --
+# if/when the user actually tries to generate a PDF.
+# ---------------------------------------------------------------------------
+try:
+    from fpdf import FPDF
+    from fpdf.enums import XPos, YPos
+    _FPDF_IMPORT_ERROR: str | None = None
+except ImportError as exc:
+    FPDF = object  # placeholder base class so _ReportPDF below can still be defined
+    XPos = YPos = None
+    _FPDF_IMPORT_ERROR = (
+        f"PDF generation is unavailable: the 'fpdf2' package could not be imported "
+        f"({exc}). This is almost always a local Python-environment problem, not a "
+        f"bug in this app -- most commonly an old 'fpdf' (PyFPDF) package installed "
+        f"alongside fpdf2 (they share the same import name), or a corrupted install. "
+        f"Try, in order: (1) pip uninstall --yes fpdf, then pip install --upgrade "
+        f"fpdf2 -- (2) if that doesn't help, create a fresh virtual environment "
+        f"(python -m venv venv) and reinstall requirements.txt into it, which "
+        f"sidesteps any conflicting global package state entirely."
+    )
 
 # ---------------------------------------------------------------------------
 # PALETTE -- lifted directly from app.py's CSS (same hex values) so the PDF
@@ -295,15 +320,25 @@ def _standing_content(standing_result) -> tuple[str, str, str]:
     return "Unavailable", "Academic standing unavailable for this report", RENDER_MUTED
 
 
-def _cgpa_content(cgpa_result) -> tuple[str, str, str]:
-    """Labeled 'CGPA' (not 'GPA') in the Performance Assessment section --
-    this is a distinct, separately-computed value from the KPI row's
-    directly-calculated 'GPA' card (summary.gpa), and giving it the same
-    label as that card was genuinely ambiguous (two cards both saying
-    "GPA" with different numbers). No subtext is shown for the OK case;
-    the "CGPA" label is now self-explanatory on its own."""
+def _cgpa_content(cgpa_result, previous_record=None) -> tuple[str, str, str]:
+    """Labeled 'CGPA' (not 'GPA') in the Performance Assessment section.
+    When no previous record was entered, this is the same credit-unit-
+    weighted calculation as the KPI row's 'GPA' card (summary.gpa; see
+    feature_engineering.build_academic_summary's docstring for why
+    they're computed identically in that case) -- shown under its own
+    label since the two cards previously both said "GPA" with different
+    numbers, which was genuinely ambiguous. When a previous CGPA + units
+    WAS entered, the subtitle discloses exactly what was blended in, so
+    the number is never a black box. status is always STATUS_OK in
+    practice now that this is a deterministic calculation rather than a
+    model prediction -- the unavailable branch is kept only as a
+    defensive fallback."""
     if cgpa_result.status == mu.STATUS_OK:
-        return f"{cgpa_result.predicted_cgpa:.2f}", "", RENDER_GOOD
+        if previous_record is not None:
+            sub = f"Includes {previous_record.total_units} prior units at {previous_record.cgpa:.2f} CGPA"
+        else:
+            sub = ""
+        return f"{cgpa_result.predicted_cgpa:.2f}", sub, RENDER_GOOD
     return "Unavailable", "CGPA unavailable for this report", RENDER_MUTED
 
 
@@ -314,6 +349,7 @@ def generate_report_pdf(
     standing_result,
     cgpa_result,
     anomaly_result=None,
+    previous_record=None,
 ) -> bytes:
     """
     standing_result / cgpa_result: the exact model_utils.PredictionResult
@@ -329,6 +365,9 @@ def generate_report_pdf(
     Status" card or backend terminology. Pass None to omit the check
     entirely (e.g. if the caller never ran it).
     """
+    if _FPDF_IMPORT_ERROR is not None:
+        raise RuntimeError(_FPDF_IMPORT_ERROR)
+
     pdf = _ReportPDF(format="A4")
     pdf.set_auto_page_break(False)
     pdf.set_margins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
@@ -385,7 +424,7 @@ def generate_report_pdf(
     card_w = (CONTENT_WIDTH - gap) / 2
 
     standing_headline, standing_sub, standing_status = _standing_content(standing_result)
-    cgpa_headline, cgpa_sub, cgpa_status = _cgpa_content(cgpa_result)
+    cgpa_headline, cgpa_sub, cgpa_status = _cgpa_content(cgpa_result, previous_record=previous_record)
 
     _draw_assessment_card(pdf, PAGE_MARGIN, cards_y, card_w, card_h,
                            "Academic Standing", standing_headline, standing_sub, standing_status)
@@ -393,9 +432,10 @@ def generate_report_pdf(
                            "CGPA", cgpa_headline, cgpa_sub, cgpa_status)
 
     # ---------------- 4. HIGH-SCORE CONFIRMATION NOTE (conditional) ----------------
-    # Narrow and honest: only ever flags unusually HIGH scores (verified
-    # against the real model's decision_function -- see app.py for the
-    # same note, kept in sync). Only rendered when something was actually
+    # Only flags a score that is both exceptionally high AND statistically
+    # inconsistent with the specific student's own other scores (see
+    # model_utils.detect_anomalous_subjects -- see app.py for the same
+    # note, kept in sync). Only rendered when something was actually
     # flagged; height is measured with a dry-run pass so it can never push
     # the report to a second page regardless of how many courses trigger it.
     note_top = cards_y + card_h + 6
@@ -403,9 +443,15 @@ def generate_report_pdf(
     if anomaly_result is not None and anomaly_result.status == mu.STATUS_OK and anomaly_result.anomalous_subjects:
         flagged = anomaly_result.anomalous_subjects
         if len(flagged) == 1:
-            note_text = f"Please confirm: {flagged[0]} score appears unusually high."
+            subject_phrase = f"the {flagged[0]} score"
         else:
-            note_text = f"Please confirm: the following scores appear unusually high: {', '.join(flagged)}."
+            subject_phrase = f"the following scores: {', '.join(flagged)}"
+        note_text = (
+            f"Score Confirmation Recommended: one or more exceptionally high scores "
+            f"({subject_phrase}) may warrant review because they appear statistically "
+            f"inconsistent with the student's available academic performance data. Please "
+            f"verify the score entry against the original academic record."
+        )
 
         pdf.set_font("Helvetica", "I", 8.5)
         lines = pdf.multi_cell(CONTENT_WIDTH, 4.2, note_text, dry_run=True, output="LINES")
@@ -434,7 +480,7 @@ def generate_report_pdf(
         col_w = CONTENT_WIDTH
         columns = [subjects]
 
-    name_w, score_w, grade_w = col_w * 0.58, col_w * 0.24, col_w * 0.18
+    name_w, score_w, grade_w, units_w = col_w * 0.48, col_w * 0.20, col_w * 0.16, col_w * 0.16
     table_font = 9
 
     for col_idx, col_subjects in enumerate(columns):
@@ -447,7 +493,8 @@ def generate_report_pdf(
         pdf.set_font("Helvetica", "B", table_font)
         pdf.cell(name_w, header_h, "Course", fill=True, new_x=XPos.RIGHT, new_y=YPos.TOP)
         pdf.cell(score_w, header_h, "Score", fill=True, align="C", new_x=XPos.RIGHT, new_y=YPos.TOP)
-        pdf.cell(grade_w, header_h, "Grade", fill=True, align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(grade_w, header_h, "Grade", fill=True, align="C", new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(units_w, header_h, "Units", fill=True, align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         y += header_h
 
         pdf.set_font("Helvetica", "", table_font)
@@ -463,8 +510,10 @@ def generate_report_pdf(
             pdf.cell(score_w, row_h, f"{subj.score:g}", align="C", new_x=XPos.RIGHT, new_y=YPos.TOP)
             pdf.set_font("Helvetica", "B", table_font)
             pdf.set_text_color(*GREEN_PRIMARY)
-            pdf.cell(grade_w, row_h, subj.grade, align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.cell(grade_w, row_h, subj.grade, align="C", new_x=XPos.RIGHT, new_y=YPos.TOP)
             pdf.set_font("Helvetica", "", table_font)
+            pdf.set_text_color(*BODY_TEXT)
+            pdf.cell(units_w, row_h, str(subj.units), align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             y += row_h
 
         pdf.set_draw_color(*TABLE_BORDER)
